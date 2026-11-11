@@ -185,10 +185,7 @@ def build_message(products, time_period):
 
 def build_plain_message(products, time_period):
     """构造 Bark/ntfy 使用的纯文本消息"""
-    lines = [
-        f"⏰ 当前时间段: {time_period}",
-        "",
-    ]
+    lines = [f"⏰ 当前时间段: {time_period}"]
 
     for i, p in enumerate(products, 1):
         tags = []
@@ -198,17 +195,10 @@ def build_plain_message(products, time_period):
             tags.append("💎超高价值")
         flag = f" [{' '.join(tags)}]" if tags else ""
 
-        lines.append(f"{i}. {p['name']}{flag}")
-        lines.append(f"   价格: {p['price']} 洛克贝 | 限购: {p['limit']}")
-        if p.get("remain"):
-            lines.append(f"   ⏳ 剩余时间: {p['remain']}")
-        if p.get("type"):
-            lines.append(f"   类型: {p['type']}")
-        if p.get("desc"):
-            lines.append(f"   {p['desc']}")
-        lines.append("")
+        lines.append(
+            f"{i}. {p['name']}{flag} 价格: {p['price']} 洛克贝 | 限购: {p['limit']}"
+        )
 
-    lines.append(f"📎 查看详情: {URL}")
     return "\n".join(lines)
 
 
@@ -226,8 +216,7 @@ def build_plain_no_merchant_message():
     """无商人时段的纯文本消息"""
     return (
         "⏰ 当前时段: 00:00 - 08:00\n"
-        "每日0:00-8:00无远行商人，请等待下个时间段。\n"
-        f"\n📎 查看详情: {URL}"
+        "每日0:00-8:00无远行商人，请等待下个时间段。"
     )
 
 
@@ -526,7 +515,7 @@ def main():
                 "elements": [{"tag": "markdown", "content": f"**抓取失败**\n\n错误信息: {e}"}],
             },
         }
-        plain_msg = f"⚠️ 抓取失败，请检查网站是否可用\n错误信息: {e}\n\n📎 查看详情: {URL}"
+        plain_msg = f"⚠️ 抓取失败，请检查网站是否可用\n错误信息: {e}"
         send_to_wecom(msg)
         send_to_feishu(feishu_payload)
         send_to_bark(TITLE, plain_msg)
@@ -557,7 +546,7 @@ def main():
                 ],
             },
         }
-        plain_msg = f"⚠️ 未能获取到商品信息，请手动查看\n\n📎 查看详情: {URL}"
+        plain_msg = "⚠️ 未能获取到商品信息，请手动查看"
     else:
         print(f"📦 当前时间段: {time_period}")
         print(f"📦 找到 {len(products)} 个商品:")
@@ -575,8 +564,14 @@ def main():
 
     print("\n📨 推送消息预览:")
     print("-" * 40)
-    print(msg)
-    print("-" * 40)
+    if WEBHOOK_URL or FEISHU_WEBHOOK_URL:
+        print("【企业微信 Markdown】")
+        print(msg)
+        print("-" * 40)
+    if bark_endpoint or ntfy_server:
+        print("【Bark / ntfy 纯文本】")
+        print(plain_msg)
+        print("-" * 40)
 
     # 推送到所有已配置的渠道
     send_to_wecom(msg)
