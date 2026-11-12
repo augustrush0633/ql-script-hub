@@ -189,8 +189,6 @@ def build_plain_message(products, time_period):
 
     for i, p in enumerate(products, 1):
         tags = []
-        if p.get("recommend"):
-            tags.append("🔥强烈推荐")
         if p.get("high_value"):
             tags.append("💎超高价值")
         flag = f" [{' '.join(tags)}]" if tags else ""
