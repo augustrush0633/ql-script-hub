@@ -12,6 +12,7 @@ import os
 import re
 import sys
 import time
+import json
 from datetime import datetime
 
 try:
@@ -87,7 +88,6 @@ def load_config():
         "rock_value": _env("ROCK_VALUE") or "3",
     }
 
-#ROCK_VALUE 0 不显示，1 仅强烈推荐，2 仅超高价值，3 全部显示
 
 def resolve_bark(cfg):
     """解析 Bark 服务地址与设备 Key，返回 (server, key) 或 None"""
@@ -562,22 +562,22 @@ def send_to_ntfy(cfg, title, body, priority="default", tags=None):
 
     server, topic, publish_url = target
     payload = {
+        "topic": topic,
         "title": title,
         "message": truncate_utf8(body),
         "priority": priority,
         "tags": tags or ["bell"],
         "click": URL,
     }
-    headers = {"Markdown": "yes"}
+    headers = {"Content-Type": "application/json; charset=utf-8"}
     if cfg["ntfy_token"]:
         headers["Authorization"] = f"Bearer {cfg['ntfy_token']}"
+    body_bytes = json.dumps(payload, ensure_ascii=False).encode("utf-8")
 
     def _do():
-        resp = session.post(publish_url, json=payload, headers=headers, timeout=30)
-        if resp.status_code in (404, 405):
-            fallback = dict(payload)
-            fallback["topic"] = topic
-            resp = session.post(server, json=fallback, headers=headers, timeout=30)
+        resp = session.post(server, data=body_bytes, headers=headers, timeout=30)
+        if resp.status_code in (404, 405) and publish_url != server:
+            resp = session.post(publish_url, data=body_bytes, headers=headers, timeout=30)
         resp.raise_for_status()
         return resp
 
