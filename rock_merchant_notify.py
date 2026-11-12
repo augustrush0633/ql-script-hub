@@ -188,13 +188,8 @@ def build_plain_message(products, time_period):
     lines = [f"⏰ 当前时间段: {time_period}"]
 
     for i, p in enumerate(products, 1):
-        tags = []
-        if p.get("high_value"):
-            tags.append("💎超高价值")
-        flag = f" [{' '.join(tags)}]" if tags else ""
-
         lines.append(
-            f"{i}. {p['name']}{flag} 价格: {p['price']} 洛克贝 | 限购: {p['limit']}"
+            f"{i}. {p['name']} 价格: {p['price']} 洛克贝 | 限购: {p['limit']}"
         )
 
     return "\n".join(lines)
