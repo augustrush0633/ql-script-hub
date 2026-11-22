@@ -18,18 +18,30 @@ new Env('Keller 商品库存监控')
     KELLER_STATE_FILE 状态文件路径，可选；默认优先存放在 /ql/data 下
 
 通知相关（脚本直推专用变量，统一加 _KELLER 后缀，避免与青龙内置渠道重复推送）：
-    BARK_PUSH_KELLER           Bark 设备码，或完整地址 https://api.day.app/设备码
-    BARK_SERVER_KELLER         Bark 服务器地址，默认 https://api.day.app
-    BARK_GROUP_KELLER / BARK_SOUND_KELLER / BARK_ICON_KELLER / BARK_LEVEL_KELLER / BARK_URL_KELLER  可选
-    NTFY_URL_KELLER            ntfy 服务器地址，如 https://ntfy.sh
-    NTFY_TOPIC_KELLER          ntfy 订阅主题（相当于密码，建议用随机长字符串）
-    NTFY_PRIORITY_KELLER       ntfy 优先级 1-5，默认 3（可选）
-    NTFY_TOKEN_KELLER          ntfy 访问令牌（可选，与用户名密码二选一）
-    NTFY_USERNAME_KELLER / NTFY_PASSWORD_KELLER  ntfy 账号密码（可选）
+    Bark:
+      BARK_PUSH_KELLER / BARK_SERVER_KELLER
+      BARK_GROUP_KELLER / BARK_SOUND_KELLER / BARK_ICON_KELLER / BARK_LEVEL_KELLER / BARK_URL_KELLER
+    ntfy:
+      NTFY_URL_KELLER / NTFY_TOPIC_KELLER / NTFY_PRIORITY_KELLER
+      NTFY_TOKEN_KELLER / NTFY_USERNAME_KELLER / NTFY_PASSWORD_KELLER
+    邮件（SMTP）:
+      SMTP_SERVER_KELLER（host:port）/ SMTP_SSL_KELLER（true 或 false）
+      SMTP_EMAIL_KELLER / SMTP_PASSWORD_KELLER
+      SMTP_EMAIL_TO_KELLER（可选，多个用分号）/ SMTP_NAME_KELLER（可选）
+    Telegram:
+      TG_BOT_TOKEN_KELLER / TG_USER_ID_KELLER / TG_API_HOST_KELLER
+      TG_PROXY_HOST_KELLER / TG_PROXY_PORT_KELLER / TG_PROXY_AUTH_KELLER（可选）
+    企业微信:
+      QYWX_KEY_KELLER（群机器人）
+      或 QYWX_AM_KELLER（应用消息：corpid,corpsecret,touser,agentid[,media_id]）
+      QYWX_ORIGIN_KELLER（可选，代理地址）
+    Server酱:
+      PUSH_KEY_KELLER / SERVERCHAN_URL_KELLER（可选，自定义服务地址）
 
-    推送策略（互斥，保证同一条通知只发一次）：
+    推送策略（互斥，保证同一条通知同一渠道只发一次）：
     - 配置了任一 *_KELLER 变量：只由脚本直推对应渠道，不调用青龙 notify.py；
-    - 未配置 *_KELLER 变量：回退青龙 notify.py，脚本不再用标准 BARK_*/NTFY_* 变量直推。
+    - 未配置 *_KELLER 变量：回退青龙 notify.py，脚本不再用标准变量直推。
+    - 企业微信同时配置 QYWX_KEY_KELLER 和 QYWX_AM_KELLER 时，只发群机器人，避免重复。
 
 说明：
     - 脚本默认常驻循环，每隔 KELLER_INTERVAL 分钟检查一次。
@@ -46,9 +58,13 @@ import io
 import json
 import os
 import re
+import smtplib
 import sys
 import time
 from datetime import datetime, timedelta
+from email.header import Header
+from email.mime.text import MIMEText
+from email.utils import formataddr
 
 import requests
 
@@ -301,18 +317,236 @@ def ntfy_push(title, content):
         return False, str(e)
 
 
+def smtp_push(title, content):
+    """SMTP 邮件直推，变量统一使用 _KELLER 后缀"""
+    server_raw = os.getenv("SMTP_SERVER_KELLER", "").strip()
+    sender = os.getenv("SMTP_EMAIL_KELLER", "").strip()
+    password = os.getenv("SMTP_PASSWORD_KELLER", "").strip()
+    use_ssl = os.getenv("SMTP_SSL_KELLER", "false").strip().lower() in ("1", "true", "yes")
+    name = os.getenv("SMTP_NAME_KELLER", "").strip() or "Keller Monitor"
+    receiver_raw = os.getenv("SMTP_EMAIL_TO_KELLER", "").strip() or sender
+
+    if not server_raw:
+        return False, "未配置 SMTP_SERVER_KELLER"
+    if not sender or not password:
+        return False, "未配置 SMTP_EMAIL_KELLER 或 SMTP_PASSWORD_KELLER"
+    receivers = [item.strip() for item in re.split(r"[;；,，]", receiver_raw) if item.strip()]
+    if not receivers:
+        return False, "未配置有效收件人 SMTP_EMAIL_TO_KELLER"
+
+    if ":" in server_raw:
+        host, port_text = server_raw.rsplit(":", 1)
+        port = int(port_text) if port_text.isdigit() else (465 if use_ssl else 25)
+    else:
+        host = server_raw
+        port = 465 if use_ssl else 25
+
+    message = MIMEText(f"{title}\n\n{content}", "plain", "utf-8")
+    message["From"] = formataddr((str(Header(name, "utf-8")), sender))
+    message["To"] = ",".join(receivers)
+    message["Subject"] = Header(title, "utf-8")
+
+    client = None
+    try:
+        if use_ssl:
+            client = smtplib.SMTP_SSL(host, port, timeout=20)
+        else:
+            client = smtplib.SMTP(host, port, timeout=20)
+            client.ehlo()
+            if client.has_extn("starttls"):
+                client.starttls()
+                client.ehlo()
+        client.login(sender, password)
+        client.sendmail(sender, receivers, message.as_bytes())
+        return True, f"{len(receivers)} 个收件人"
+    except Exception as e:
+        return False, str(e)
+    finally:
+        if client is not None:
+            try:
+                client.quit()
+            except Exception:
+                pass
+
+
+def telegram_push(title, content):
+    """Telegram 机器人直推，变量统一使用 _KELLER 后缀"""
+    token = os.getenv("TG_BOT_TOKEN_KELLER", "").strip()
+    chat_id = os.getenv("TG_USER_ID_KELLER", "").strip()
+    api_host = (os.getenv("TG_API_HOST_KELLER", "") or "https://api.telegram.org").strip().rstrip("/")
+    if not token:
+        return False, "未配置 TG_BOT_TOKEN_KELLER"
+    if not chat_id:
+        return False, "未配置 TG_USER_ID_KELLER"
+
+    proxies = None
+    proxy_host = os.getenv("TG_PROXY_HOST_KELLER", "").strip()
+    proxy_port = os.getenv("TG_PROXY_PORT_KELLER", "").strip()
+    proxy_auth = os.getenv("TG_PROXY_AUTH_KELLER", "").strip()
+    if proxy_host and proxy_port:
+        if proxy_auth and "@" not in proxy_host:
+            proxy_host = f"{proxy_auth}@{proxy_host}"
+        proxy_url = f"http://{proxy_host}:{proxy_port}"
+        proxies = {"http": proxy_url, "https": proxy_url}
+
+    payload = {
+        "chat_id": chat_id,
+        "text": f"{title}\n\n{content}",
+        "disable_web_page_preview": "true",
+    }
+    try:
+        response = requests.post(
+            f"{api_host}/bot{token}/sendMessage",
+            params=payload,
+            proxies=proxies,
+            timeout=20,
+        )
+        result = response.json()
+        if result.get("ok"):
+            return True, "ok"
+        return False, result.get("description") or str(result)
+    except Exception as e:
+        return False, str(e)
+
+
+def wecom_push(title, content):
+    """企业微信直推：优先群机器人，未配置时走应用消息，避免重复发送"""
+    key = os.getenv("QYWX_KEY_KELLER", "").strip()
+    app_config = os.getenv("QYWX_AM_KELLER", "").strip()
+    origin = (os.getenv("QYWX_ORIGIN_KELLER", "") or "https://qyapi.weixin.qq.com").strip().rstrip("/")
+    if not key and not app_config:
+        return False, "未配置 QYWX_KEY_KELLER 或 QYWX_AM_KELLER"
+
+    text = f"{title}\n\n{content}"
+    try:
+        if key:
+            response = requests.post(
+                f"{origin}/cgi-bin/webhook/send",
+                params={"key": key},
+                json={"msgtype": "text", "text": {"content": text}},
+                timeout=20,
+            )
+            result = response.json()
+            if result.get("errcode") == 0:
+                return True, "群机器人"
+            return False, result.get("errmsg") or str(result)
+
+        parts = [part.strip() for part in app_config.split(",")]
+        if len(parts) < 4:
+            return False, "QYWX_AM_KELLER 格式应为 corpid,corpsecret,touser,agentid[,media_id]"
+        corpid, corpsecret, touser, agentid = parts[:4]
+        media_id = parts[4] if len(parts) >= 5 else ""
+        touser = touser or "@all"
+
+        token_resp = requests.post(
+            f"{origin}/cgi-bin/gettoken",
+            params={"corpid": corpid, "corpsecret": corpsecret},
+            timeout=20,
+        ).json()
+        access_token = token_resp.get("access_token")
+        if not access_token:
+            return False, token_resp.get("errmsg") or str(token_resp)
+
+        agent_value = int(agentid) if agentid.isdigit() else agentid
+        if media_id:
+            payload = {
+                "touser": touser,
+                "msgtype": "mpnews",
+                "agentid": agent_value,
+                "mpnews": {
+                    "articles": [
+                        {
+                            "title": title,
+                            "thumb_media_id": media_id,
+                            "author": "Author",
+                            "content_source_url": "",
+                            "content": content.replace("\n", "<br/>"),
+                            "digest": content,
+                        }
+                    ]
+                },
+            }
+        else:
+            payload = {
+                "touser": touser,
+                "msgtype": "text",
+                "agentid": agent_value,
+                "text": {"content": text},
+                "safe": "0",
+            }
+
+        response = requests.post(
+            f"{origin}/cgi-bin/message/send",
+            params={"access_token": access_token},
+            json=payload,
+            timeout=20,
+        )
+        result = response.json()
+        if result.get("errcode") == 0:
+            return True, "应用消息"
+        return False, result.get("errmsg") or str(result)
+    except Exception as e:
+        return False, str(e)
+
+
+def serverchan_push(title, content):
+    """Server酱直推，变量统一使用 _KELLER 后缀"""
+    key = os.getenv("PUSH_KEY_KELLER", "").strip()
+    base = (os.getenv("SERVERCHAN_URL_KELLER", "") or "").strip().rstrip("/")
+    if not key:
+        return False, "未配置 PUSH_KEY_KELLER"
+
+    if base:
+        url = f"{base}/{key}.send"
+    else:
+        match = re.match(r"sctp(\d+)t", key)
+        if match:
+            url = f"https://{match.group(1)}.push.ft07.com/send/{key}.send"
+        else:
+            url = f"https://sctapi.ftqq.com/{key}.send"
+
+    try:
+        response = requests.post(
+            url,
+            data={"text": title, "desp": content.replace("\n", "\n\n")},
+            timeout=20,
+        )
+        result = response.json()
+        if result.get("errno") == 0 or result.get("code") == 0:
+            return True, "ok"
+        return False, result.get("message") or str(result)
+    except Exception as e:
+        return False, str(e)
+
+
 def direct_channels():
     channels = []
     if os.getenv("BARK_PUSH_KELLER", "").strip():
         channels.append("Bark")
     if os.getenv("NTFY_TOPIC_KELLER", "").strip():
         channels.append("ntfy")
+    if os.getenv("SMTP_SERVER_KELLER", "").strip():
+        channels.append("邮件")
+    if os.getenv("TG_BOT_TOKEN_KELLER", "").strip() and os.getenv("TG_USER_ID_KELLER", "").strip():
+        channels.append("Telegram")
+    if os.getenv("QYWX_KEY_KELLER", "").strip() or os.getenv("QYWX_AM_KELLER", "").strip():
+        channels.append("企业微信")
+    if os.getenv("PUSH_KEY_KELLER", "").strip():
+        channels.append("Server酱")
     return channels
 
 
 def send_direct(title, content, channels):
     delivered = []
-    for name, push_func in (("Bark", bark_push), ("ntfy", ntfy_push)):
+    push_funcs = (
+        ("Bark", bark_push),
+        ("ntfy", ntfy_push),
+        ("邮件", smtp_push),
+        ("Telegram", telegram_push),
+        ("企业微信", wecom_push),
+        ("Server酱", serverchan_push),
+    )
+    for name, push_func in push_funcs:
         if name not in channels:
             continue
         success, detail = push_func(title, content)
@@ -360,7 +594,7 @@ def notify(title, content):
     no_channel = ("无推送渠道" in output) or ("没有推送渠道" in output)
     if call_error or no_channel:
         log("❌ 青龙 notify.py 没有可用渠道；为避免与标准 BARK_*/NTFY_* 重复，脚本不再直推")
-        log("如需脚本直推，请配置 BARK_PUSH_KELLER，或 NTFY_URL_KELLER + NTFY_TOPIC_KELLER")
+        log("如需脚本直推，请配置任一 *_KELLER 渠道变量（BARK / NTFY / SMTP / TG / QYWX / PUSH_KEY）")
         log(f"📢 {title}\n{content}")
         return False
 
