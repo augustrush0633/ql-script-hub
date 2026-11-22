@@ -17,17 +17,19 @@ new Env('Keller 商品库存监控')
     KELLER_ONCE       设为 1 时只检查一次就退出，适合配合青龙 cron 定时运行
     KELLER_STATE_FILE 状态文件路径，可选；默认优先存放在 /ql/data 下
 
-通知相关（青龙内置 notify.py 支持的变量，配置到青龙环境变量即可）：
-    BARK_PUSH / BARK_SERVER  Bark 推送（可选）
-    NTFY_URL                 ntfy 服务器地址，如 https://ntfy.sh
-    NTFY_TOPIC               ntfy 订阅主题（相当于密码，建议用随机长字符串）
-    NTFY_PRIORITY            ntfy 优先级 1-5，默认 3（可选）
-    NTFY_TOKEN               ntfy 访问令牌（可选，与用户名密码二选一）
-    NTFY_USERNAME / NTFY_PASSWORD  ntfy 账号密码（可选）
-    NTFY_ACTIONS             ntfy 动作按钮（可选）
+通知相关（脚本直推专用变量，统一加 _KELLER 后缀，避免与青龙内置渠道重复推送）：
+    BARK_PUSH_KELLER           Bark 设备码，或完整地址 https://api.day.app/设备码
+    BARK_SERVER_KELLER         Bark 服务器地址，默认 https://api.day.app
+    BARK_GROUP_KELLER / BARK_SOUND_KELLER / BARK_ICON_KELLER / BARK_LEVEL_KELLER / BARK_URL_KELLER  可选
+    NTFY_URL_KELLER            ntfy 服务器地址，如 https://ntfy.sh
+    NTFY_TOPIC_KELLER          ntfy 订阅主题（相当于密码，建议用随机长字符串）
+    NTFY_PRIORITY_KELLER       ntfy 优先级 1-5，默认 3（可选）
+    NTFY_TOKEN_KELLER          ntfy 访问令牌（可选，与用户名密码二选一）
+    NTFY_USERNAME_KELLER / NTFY_PASSWORD_KELLER  ntfy 账号密码（可选）
 
-    当 notify.py 提示“无推送渠道”时，脚本会用 BARK_PUSH / NTFY_TOPIC
-    直推对应渠道兜底，两者都配置时会同时补发。
+    推送策略（互斥，保证同一条通知只发一次）：
+    - 配置了任一 *_KELLER 变量：只由脚本直推对应渠道，不调用青龙 notify.py；
+    - 未配置 *_KELLER 变量：回退青龙 notify.py，脚本不再用标准 BARK_*/NTFY_* 变量直推。
 
 说明：
     - 脚本默认常驻循环，每隔 KELLER_INTERVAL 分钟检查一次。
@@ -231,30 +233,30 @@ def build_message(results):
 
 
 def bark_push(title, content):
-    """Bark 直推兜底，BARK_PUSH 支持设备码或完整地址两种写法"""
-    push = os.getenv("BARK_PUSH", "").strip()
+    """Bark 直推，专用变量统一使用 _KELLER 后缀"""
+    push = os.getenv("BARK_PUSH_KELLER", "").strip()
     if not push:
-        return False, "未检测到 BARK_PUSH 环境变量"
+        return False, "未配置 BARK_PUSH_KELLER"
 
-    server = (os.getenv("BARK_SERVER", "") or "https://api.day.app").strip().rstrip("/")
+    server = (os.getenv("BARK_SERVER_KELLER", "") or "https://api.day.app").strip().rstrip("/")
     if push.startswith(("http://", "https://")):
         match = re.match(r"^(https?://[^/]+)(/.*)?$", push.rstrip("/"))
         if not match:
-            return False, f"BARK_PUSH 地址格式不正确: {push}"
+            return False, f"BARK_PUSH_KELLER 地址格式不正确: {push}"
         server = match.group(1)
         key = (match.group(2) or "").strip("/")
         if not key:
-            return False, f"BARK_PUSH 地址中缺少设备码: {push}"
+            return False, f"BARK_PUSH_KELLER 地址中缺少设备码: {push}"
     else:
         key = push
 
     payload = {"device_key": key, "title": title, "body": content}
     for env_name, field in (
-        ("BARK_GROUP", "group"),
-        ("BARK_SOUND", "sound"),
-        ("BARK_ICON", "icon"),
-        ("BARK_LEVEL", "level"),
-        ("BARK_URL", "url"),
+        ("BARK_GROUP_KELLER", "group"),
+        ("BARK_SOUND_KELLER", "sound"),
+        ("BARK_ICON_KELLER", "icon"),
+        ("BARK_LEVEL_KELLER", "level"),
+        ("BARK_URL_KELLER", "url"),
     ):
         value = os.getenv(env_name, "").strip()
         if value:
@@ -269,22 +271,22 @@ def bark_push(title, content):
 
 
 def ntfy_push(title, content):
-    """ntfy 直推兜底，复用青龙的 NTFY_URL / NTFY_TOPIC 等变量"""
-    server = (os.getenv("NTFY_URL", "") or "").strip().rstrip("/")
-    topic = os.getenv("NTFY_TOPIC", "").strip()
+    """ntfy 直推，专用变量统一使用 _KELLER 后缀"""
+    server = (os.getenv("NTFY_URL_KELLER", "") or "").strip().rstrip("/")
+    topic = os.getenv("NTFY_TOPIC_KELLER", "").strip()
     if not server:
-        return False, "未配置 NTFY_URL，例如 https://ntfy.sh"
+        return False, "未配置 NTFY_URL_KELLER，例如 https://ntfy.sh"
     if not topic:
-        return False, "未配置 NTFY_TOPIC"
+        return False, "未配置 NTFY_TOPIC_KELLER"
 
-    priority = os.getenv("NTFY_PRIORITY", "3").strip() or "3"
+    priority = os.getenv("NTFY_PRIORITY_KELLER", "3").strip() or "3"
     payload = {"topic": topic, "title": title, "message": content}
     payload["priority"] = int(priority) if priority.isdigit() else priority
 
     headers = {}
-    token = os.getenv("NTFY_TOKEN", "").strip()
-    username = os.getenv("NTFY_USERNAME", "").strip()
-    password = os.getenv("NTFY_PASSWORD", "").strip()
+    token = os.getenv("NTFY_TOKEN_KELLER", "").strip()
+    username = os.getenv("NTFY_USERNAME_KELLER", "").strip()
+    password = os.getenv("NTFY_PASSWORD_KELLER", "").strip()
     if token:
         headers["Authorization"] = f"Bearer {token}"
     elif username and password:
@@ -299,12 +301,47 @@ def ntfy_push(title, content):
         return False, str(e)
 
 
+def direct_channels():
+    channels = []
+    if os.getenv("BARK_PUSH_KELLER", "").strip():
+        channels.append("Bark")
+    if os.getenv("NTFY_TOPIC_KELLER", "").strip():
+        channels.append("ntfy")
+    return channels
+
+
+def send_direct(title, content, channels):
+    delivered = []
+    for name, push_func in (("Bark", bark_push), ("ntfy", ntfy_push)):
+        if name not in channels:
+            continue
+        success, detail = push_func(title, content)
+        if success:
+            delivered.append(name)
+            log(f"✅ {name} 直推成功: {detail}")
+        else:
+            log(f"❌ {name} 直推失败: {detail}")
+    return delivered
+
+
 def notify(title, content):
-    if not HAD_SEND:
-        log("⚠️ 未加载 notify.py，改为打印通知内容")
+    channels = direct_channels()
+    if channels:
+        log(f"通知方式: 脚本直推（{'、'.join(channels)}），不调用 notify.py，避免重复推送")
+        delivered = send_direct(title, content, channels)
+        if delivered:
+            log(f"✅ 通知通过 {'、'.join(delivered)} 发送完成")
+            return True
+        log("❌ 所有 *_KELLER 直推渠道均发送失败")
         log(f"📢 {title}\n{content}")
         return False
 
+    if not HAD_SEND:
+        log("⚠️ 未配置 *_KELLER 渠道且未加载 notify.py，仅打印通知内容")
+        log(f"📢 {title}\n{content}")
+        return False
+
+    log("通知方式: 回退青龙 notify.py（未配置 *_KELLER 专用渠道）")
     output = ""
     call_error = ""
     try:
@@ -322,26 +359,8 @@ def notify(title, content):
 
     no_channel = ("无推送渠道" in output) or ("没有推送渠道" in output)
     if call_error or no_channel:
-        log("⚠️ notify.py 未成功识别推送渠道，尝试用 BARK_PUSH / NTFY_TOPIC 直推兜底")
-        delivered = []
-        if os.getenv("BARK_PUSH", "").strip():
-            success, detail = bark_push(title, content)
-            if success:
-                delivered.append("Bark")
-                log(f"✅ Bark 直推成功: {detail}")
-            else:
-                log(f"❌ Bark 直推失败: {detail}")
-        if os.getenv("NTFY_TOPIC", "").strip():
-            success, detail = ntfy_push(title, content)
-            if success:
-                delivered.append("ntfy")
-                log(f"✅ ntfy 直推成功: {detail}")
-            else:
-                log(f"❌ ntfy 直推失败: {detail}")
-        if delivered:
-            log(f"✅ 通知通过 {'、'.join(delivered)} 发送完成")
-            return True
-        log("请检查青龙环境变量 BARK_PUSH / BARK_SERVER 或 NTFY_URL / NTFY_TOPIC，保存后重启容器再试")
+        log("❌ 青龙 notify.py 没有可用渠道；为避免与标准 BARK_*/NTFY_* 重复，脚本不再直推")
+        log("如需脚本直推，请配置 BARK_PUSH_KELLER，或 NTFY_URL_KELLER + NTFY_TOPIC_KELLER")
         log(f"📢 {title}\n{content}")
         return False
 
@@ -450,15 +469,13 @@ def main():
 
     log(f"状态文件: {state_file}")
     log(f"通知模块: {'已加载 notify.py' if HAD_SEND else '未加载 notify.py，仅日志输出'}")
-    if os.getenv("BARK_PUSH", "").strip() or os.getenv("NTFY_TOPIC", "").strip():
-        channels = []
-        if os.getenv("BARK_PUSH", "").strip():
-            channels.append("Bark")
-        if os.getenv("NTFY_TOPIC", "").strip():
-            channels.append("ntfy")
-        log("通知渠道: 已检测到 " + "、".join(channels))
+    direct = direct_channels()
+    if direct:
+        log(f"通知渠道: 脚本直推 {'、'.join(direct)}（不调用 notify.py，避免重复推送）")
     elif HAD_SEND:
-        log("通知渠道: 未检测到 BARK_PUSH / NTFY_TOPIC；若只配置了这两类渠道，请把变量写入青龙环境变量并重启容器")
+        log("通知渠道: 未配置 *_KELLER 专用变量，回退青龙 notify.py")
+    else:
+        log("通知渠道: 未配置 *_KELLER 且未加载 notify.py，仅日志输出")
     log(f"监控商品数: {len(urls)}，间隔: {interval:g} 分钟，模式: {mode}")
     for url in urls:
         log(f"  - {url}")
